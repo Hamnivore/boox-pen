@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Pen pad</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; color: #000; overflow: hidden;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    overscroll-behavior: none; font: 22px/1.4 sans-serif; }
+  /* Palm zone = everything outside #area, shaded via a huge box-shadow. */
+  #area { position: fixed; display: none; border: 3px solid #000; box-sizing: border-box;
+    box-shadow: 0 0 0 9999px #d8d8d8; }
+  #msg { position: fixed; bottom: 24px; left: 0; right: 0; text-align: center; color: #666; }
+</style></head>
+<body>
+<div id="area"></div>
+<div id="msg">Pen → laptop. Tap a few dots near different corners to outline the drawing area.</div>
+<script>
+  // Swallow everything so Android does nothing with the pen while it drives the laptop.
+  const stop = e => { e.preventDefault(); e.stopPropagation(); };
+  for (const t of ["pointerdown","pointermove","pointerup","touchstart","touchmove","touchend",
+                   "mousedown","mousemove","mouseup","click","dblclick","contextmenu",
+                   "wheel","gesturestart","selectstart","dragstart","keydown"])
+    window.addEventListener(t, stop, { passive: false, capture: true });
+  // First tap goes fullscreen (the bridge injects one at start).
+  window.addEventListener("pointerup", () => {
+    if (!document.fullscreenElement)
+      document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
+  }, { capture: true });
+
+  // Calibration: pair each pen-down's screen position with the raw sensor position the bridge saw,
+  // then fit screen = a*raw + b per axis (with axis swap) and draw the active area.
+  const msg = document.getElementById("msg"), box = document.getElementById("area");
+  let pairs = [], lastSeq = -1, area = null, fit = null;
+  try { fit = JSON.parse(localStorage.getItem("boox-pen-fit")); } catch (_) {}
+
+  const state = () => fetch("/state.json", { cache: "no-store" }).then(r => r.json());
+  state().then(s => { lastSeq = s.seq; area = s.area; draw(); }).catch(() => {});
+
+  function linfit(xs, ys) {           // least squares y = a x + b; returns [a, b, rms]
+    const n = xs.length, mx = xs.reduce((a, b) => a + b) / n, my = ys.reduce((a, b) => a + b) / n;
+    let sxx = 0, sxy = 0; xs.forEach((x, i) => { sxx += (x - mx) ** 2; sxy += (x - mx) * (ys[i] - my); });
+    if (sxx < 0.01) return null;      // not enough spread yet
+    const a = sxy / sxx, b = my - a * mx;
+    const rms = Math.sqrt(xs.reduce((s, x, i) => s + (a * x + b - ys[i]) ** 2, 0) / n);
+    return [a, b, rms];
+  }
+  function refit() {
+    if (pairs.length < 3) return;
+    const P = pairs.map(o => o.p), Q = pairs.map(o => o.q), U = pairs.map(o => o.u), V = pairs.map(o => o.v);
+    const opts = [["p", linfit(P, U), "q", linfit(Q, V)], ["q", linfit(Q, U), "p", linfit(P, V)]]
+      .filter(o => o[1] && o[3]).map(o => ({ ua: o[0], u: o[1], va: o[2], v: o[3], err: o[1][2] + o[3][2] }))
+      .sort((a, b) => a.err - b.err);
+    if (opts.length && opts[0].err < 0.03) {
+      fit = opts[0];
+      try { localStorage.setItem("boox-pen-fit", JSON.stringify(fit)); } catch (_) {}
+      draw();
+    }
+  }
+  function draw() {
+    if (!fit || !area) return;
+    const [p0, q0, p1, q1] = area, raw = { p: [p0, p1], q: [q0, q1] };
+    const us = raw[fit.ua].map(r => fit.u[0] * r + fit.u[1]), vs = raw[fit.va].map(r => fit.v[0] * r + fit.v[1]);
+    const W = innerWidth, H = innerHeight;
+    Object.assign(box.style, { display: "block",
+      left: Math.min(...us) * W + "px", width: Math.abs(us[1] - us[0]) * W + "px",
+      top: Math.min(...vs) * H + "px", height: Math.abs(vs[1] - vs[0]) * H + "px" });
+    msg.textContent = "";
+  }
+  window.addEventListener("pointerdown", ev => {
+    if (ev.pointerType !== "pen") return;
+    const u = ev.clientX / innerWidth, v = ev.clientY / innerHeight;
+    setTimeout(() => state().then(s => {
+      area = s.area;
+      if (s.seq !== lastSeq) { lastSeq = s.seq; pairs.push({ u, v, p: s.raw[0], q: s.raw[1] }); pairs = pairs.slice(-12); refit(); }
+    }).catch(() => {}), 150);
+  }, { capture: true });
+  addEventListener("resize", draw);
+</script>
+</body></html>
