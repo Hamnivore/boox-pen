@@ -80,7 +80,10 @@ def hypr_screens():
         w, h = m["width"], m["height"]
         if m.get("transform", 0) % 2:
             w, h = h, w
-        screens.append({"name": m["name"], "w": w, "h": h, "focused": m.get("focused", False)})
+        sc = m.get("scale", 1) or 1
+        # w/h: pixels (shown to the user); x/y/lw/lh: layout in logical px, for the pad's screen map.
+        screens.append({"name": m["name"], "w": w, "h": h, "x": m.get("x", 0), "y": m.get("y", 0),
+                        "lw": round(w / sc), "lh": round(h / sc), "focused": m.get("focused", False)})
     return screens
 
 def sysfs_aspect():

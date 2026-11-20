@@ -11,22 +11,37 @@
   #area { position: fixed; display: none; border: 3px solid #000; box-sizing: border-box;
     box-shadow: 0 0 0 9999px #d8d8d8; }
   #msg { position: fixed; top: 42%; left: 0; right: 0; text-align: center; color: #222; padding: 0 24px; font-size: 28px; }
-  /* Screen selector: lives in the palm strip, rotated to read upright for the user. */
-  #bar { position: fixed; display: flex; align-items: center; justify-content: center; gap: 14px;
+  /* Selector: lives in the palm strip, rotated to read upright for the user. */
+  #bar { position: fixed; display: flex; align-items: center; justify-content: center; gap: 36px;
     transform-origin: center; }
-  #bar button { font: inherit; background: #fff; color: #000; border: 2px solid #000; border-radius: 10px;
-    padding: 10px 18px; min-width: 120px; }
-  #bar button.on { background: #000; color: #fff; }
-  #bar .hint { color: #444; }
+  /* Screen map: monitors to scale, in their real arrangement. */
+  .map { position: relative; flex: none; }
+  .scr { position: absolute; box-sizing: border-box; border: 3px solid #000; background: #fff;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-size: 17px; line-height: 1.2; text-align: center; overflow: hidden; }
+  .scr b { font-size: 20px; }
+  .scr.on { background: #000; color: #fff; }
+  .unlocked .scr { border-style: dashed; }
+  .unlocked .scr.on { border-style: solid; }
+  /* Pattern: 2x2 dots, draw a Z with the pen. */
+  .pat { position: relative; flex: none; border: 2px solid #999; border-radius: 12px; background: #fff; }
+  .dot { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%;
+    background: #000; }
+  .dot.hit { box-shadow: 0 0 0 8px #fff, 0 0 0 11px #000; }
+  .hint { color: #333; font-size: 20px; max-width: 220px; }
+  #trail { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 </style></head>
 <body>
 <div id="area"></div>
 <div id="msg"></div>
 <div id="bar"></div>
+<svg id="trail"><polyline fill="none" stroke="#000" stroke-width="5" stroke-linejoin="round" points=""/></svg>
 <script>
   // In landscape-primary the BOOX Tab Ultra C's digitizer lines up 1:1 with the page
   // (measured 2026-11-19: scale 1.000, offset 0.000), so raw sensor fractions are page fractions.
   const ORIENTATION = "landscape-primary";
+  const PATTERN = [0, 1, 2, 3];      // dots: 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right = "Z"
+  const RELOCK_MS = 8000;
 
   // ---- Swallow everything so Android does nothing with the pen while it drives the laptop. ----
   // Listeners below all sit on window (capture) too, and use ev.target, since propagation stops here.
@@ -43,8 +58,8 @@
   }, { capture: true });
 
   const $ = id => document.getElementById(id);
-  const msg = $("msg"), box = $("area"), bar = $("bar");
-  let S = null;
+  const msg = $("msg"), box = $("area"), bar = $("bar"), trail = document.querySelector("#trail polyline");
+  let S = null, barW = 0, barH = 0, unlocked = false, relockTimer = 0;
   const getState = () => fetch("/state.json", { cache: "no-store" }).then(r => r.json());
   getState().then(s => { S = s; draw(); }).catch(() => {});
 
@@ -68,61 +83,72 @@
     // so the selector reads upright with --rotate too.
     const angle = Math.round(Math.atan2(S.ds[1] * H, S.ds[0] * W) / (Math.PI / 2)) * 90;
     const side = angle % 180 !== 0;
+    barW = side ? strip.h : strip.w; barH = side ? strip.w : strip.h;
     Object.assign(bar.style, { left: strip.x + strip.w / 2 + "px", top: strip.y + strip.h / 2 + "px",
-      width: (side ? strip.h : strip.w) + "px", height: (side ? strip.w : strip.h) + "px",
-      transform: `translate(-50%, -50%) rotate(${angle}deg)` });
+      width: barW + "px", height: barH + "px", transform: `translate(-50%, -50%) rotate(${angle}deg)` });
     renderBar();
   }
 
-  // ---- Screen selector with hold-to-unlock (palm-proof). ----
-  let unlocked = false, relockTimer = 0, holdTimer = 0, hold = null, pending = null;
-  const active = new Map();   // pointerId -> {x, y}
-  function renderBar(note) {
-    if (!S || !S.can_switch) { bar.innerHTML = ""; return; }
-    if (!unlocked) {
-      bar.innerHTML = `<button data-hold>Screen: ${S.active || "?"}</button>` +
-        `<span class="hint">${note || "hold 1 s to change"}</span>`;
-    } else {
-      bar.innerHTML = S.screens.map(s =>
-        `<button data-screen="${s.name}" class="${s.name === S.active ? "on" : ""}">${s.name}<br><small>${s.w}×${s.h}</small></button>`
-      ).join("") + `<span class="hint">tap one</span>`;
-    }
+  // ---- Selector: screen map + pen pattern. ----
+  function renderBar() {
+    if (!S || !S.can_switch || !S.screens.length) { bar.innerHTML = ""; return; }
+    // Map: fit the monitors' logical layout into ~75% of the strip height.
+    const xs = S.screens.map(s => s.x), ys = S.screens.map(s => s.y);
+    const x0 = Math.min(...xs), y0 = Math.min(...ys);
+    const bw = Math.max(...S.screens.map(s => s.x + s.lw)) - x0, bh = Math.max(...S.screens.map(s => s.y + s.lh)) - y0;
+    const mh = barH * 0.75, k = Math.min(mh / bh, (barW * 0.55) / bw);
+    const scr = S.screens.map(s =>
+      `<div class="scr ${s.name === S.active ? "on" : ""}" data-screen="${s.name}" style="left:${(s.x - x0) * k}px;` +
+      `top:${(s.y - y0) * k}px;width:${s.lw * k}px;height:${s.lh * k}px"><b>${s.name}</b>${s.w}×${s.h}</div>`).join("");
+    const ps = barH * 0.6, d = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+    const pat = unlocked ? "" : `<div class="pat" style="width:${ps}px;height:${ps}px">` +
+      d.map(([u, v], i) => `<div class="dot" data-dot="${i}" style="left:${u * ps}px;top:${v * ps}px"></div>`).join("") + `</div>`;
+    const hint = unlocked ? "Tap a screen with the pen" : "Draw <b>Z</b> with the pen to change screen";
+    bar.className = unlocked ? "unlocked" : "";
+    bar.innerHTML = `<div class="map" style="width:${bw * k}px;height:${bh * k}px">${scr}</div>${pat}<span class="hint">${hint}</span>`;
   }
   function relock() { unlocked = false; clearTimeout(relockTimer); renderBar(); }
-  function cancelHold() { clearTimeout(holdTimer); if (hold) { hold = null; renderBar(); } }
 
+  // Pen only: fingers and palms never reach the selector.
+  let stroke = null, pick = null;
+  const dotCenters = () => [...bar.querySelectorAll(".dot")].map(el => {
+    const r = el.getBoundingClientRect(); return { el, x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  function track(ev) {
+    stroke.pts.push(`${ev.clientX},${ev.clientY}`);
+    trail.setAttribute("points", stroke.pts.join(" "));
+    const reach = (bar.querySelector(".pat")?.getBoundingClientRect().width || 100) * 0.2;
+    dotCenters().forEach((c, i) => {
+      if (Math.hypot(ev.clientX - c.x, ev.clientY - c.y) < reach && stroke.seq[stroke.seq.length - 1] !== i) {
+        stroke.seq.push(i); c.el.classList.add("hit");
+      }
+    });
+  }
   window.addEventListener("pointerdown", ev => {
-    active.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-    if (active.size > 1) { cancelHold(); pending = null; return; }       // two contacts = palm/hand
-    const big = (ev.width || 0) > 60 || (ev.height || 0) > 60;            // fat contact = palm
-    const el = ev.target.closest && ev.target.closest("[data-hold],[data-screen]");
-    if (!el || big) return;
-    if (el.dataset.hold !== undefined && !unlocked) {
-      hold = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
-      renderBar("keep holding…");
-      holdTimer = setTimeout(() => {
-        hold = null; unlocked = true;
-        getState().then(s => { S = s; renderBar(); }).catch(renderBar);
-        relockTimer = setTimeout(relock, 5000);
-      }, 1000);
-    } else if (el.dataset.screen && unlocked) {
-      pending = { id: ev.pointerId, name: el.dataset.screen, x: ev.clientX, y: ev.clientY, t: performance.now() };
-    }
+    if (ev.pointerType !== "pen") return;
+    const t = ev.target.closest ? ev.target : null;
+    if (!unlocked && t && t.closest(".pat")) { stroke = { id: ev.pointerId, seq: [], pts: [] }; track(ev); }
+    else if (unlocked && t && t.closest("[data-screen]")) pick = { id: ev.pointerId, name: t.closest("[data-screen]").dataset.screen };
   }, { capture: true });
   window.addEventListener("pointermove", ev => {
-    const far = o => o && o.id === ev.pointerId && Math.hypot(ev.clientX - o.x, ev.clientY - o.y) > 20;
-    if (far(hold)) cancelHold();
-    if (far(pending)) pending = null;
+    if (stroke && ev.pointerId === stroke.id) track(ev);
   }, { capture: true });
   const up = ev => {
-    active.delete(ev.pointerId);
-    if (hold && hold.id === ev.pointerId) cancelHold();
-    if (pending && pending.id === ev.pointerId && performance.now() - pending.t < 600) {
-      const name = pending.name; pending = null;
-      fetch("/screen", { method: "POST", body: name }).then(r => r.json())
-        .then(s => { S = s; relock(); draw(); }).catch(relock);
+    if (stroke && ev.pointerId === stroke.id) {
+      const ok = stroke.seq.join() === PATTERN.join();
+      stroke = null; trail.setAttribute("points", "");
+      if (ok) {
+        unlocked = true;
+        getState().then(s => { S = s; renderBar(); }).catch(renderBar);
+        clearTimeout(relockTimer); relockTimer = setTimeout(relock, RELOCK_MS);
+      }
+      renderBar();
     }
-    pending = null;
+    if (pick && ev.pointerId === pick.id) {
+      const el = document.elementFromPoint(ev.clientX, ev.clientY), name = pick.name; pick = null;
+      if (el && el.closest("[data-screen]") && el.closest("[data-screen]").dataset.screen === name)
+        fetch("/screen", { method: "POST", body: name }).then(r => r.json())
+          .then(s => { S = s; relock(); draw(); }).catch(relock);
+    }
   };
   window.addEventListener("pointerup", up, { capture: true });
   window.addEventListener("pointercancel", up, { capture: true });

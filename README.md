@@ -26,10 +26,11 @@ raw `input_event` structs over USB, and Python/evdev re-emits them through `/dev
   over `adb reverse`. The page swallows all pen and touch input so Android doesn't react to your strokes.
   It locks itself to landscape, outlines the active area and greys out the palm zone. No calibration is
   needed: in landscape the Tab Ultra C's digitizer lines up 1:1 with the screen (measured to within 0.01%).
-- **Screen selector (Hyprland).** A selector in the palm strip picks which monitor the pen drives.
-  Hold it for 1 s to unlock, then tap a screen. Two contacts or a palm-sized contact cancel the hold, and
-  it relocks after 5 s. The choice is remembered in `~/.config/boox-pen/screen`, and the area refits to
-  that monitor's aspect.
+- **Screen selector (Hyprland).** The palm strip shows a map of your monitors to scale, in their real
+  arrangement, with each one's name and resolution. The one the pen drives is filled black. To change it,
+  draw a **Z** through the four dots with the pen, then tap a monitor with the pen. It relocks after 8 s.
+  Fingers and palms are ignored. The choice is remembered in `~/.config/boox-pen/screen`, and the area
+  refits to that monitor's aspect.
 - **Starts on plug-in.** `install.sh` adds a udev rule for your tablet's serial that starts a systemd
   user service. The service exits when you unplug the tablet. Only one bridge runs at a time.
 - **Rotation.** `--rotate` turns both position and tilt.
