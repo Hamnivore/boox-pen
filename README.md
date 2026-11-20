@@ -24,8 +24,8 @@ raw `input_event` structs over USB, and Python/evdev re-emits them through `/dev
 - **Palm zone.** Outside the active area (past a 3 mm margin) the pen is ignored on the laptop.
 - **Pen pad page.** On start, the bridge opens a fullscreen blank page in Chrome on the tablet, served
   over `adb reverse`. The page swallows all pen and touch input so Android doesn't react to your strokes.
-  After a few pen taps it calibrates itself (once per screen orientation), outlines the active area and
-  greys out the palm zone.
+  It locks itself to landscape, outlines the active area and greys out the palm zone. No calibration is
+  needed: in landscape the Tab Ultra C's digitizer lines up 1:1 with the screen (measured to within 0.01%).
 - **Screen selector (Hyprland).** A selector in the palm strip picks which monitor the pen drives.
   Hold it for 1 s to unlock, then tap a screen. Two contacts or a palm-sized contact cancel the hold, and
   it relocks after 5 s. The choice is remembered in `~/.config/boox-pen/screen`, and the area refits to

@@ -23,8 +23,8 @@ HYPR_DEVICE = "boox-pen-(adb)"   # Hyprland's name for it: lowercased, spaces ->
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "boox-pen")
 MARGIN_MM = 3                    # pen keeps working this far past the area edge (clamped), then goes dead
 
-# Shared with the HTTP thread (pad.html). Positions are raw-normalized sensor coords.
-STATE = {"seq": 0, "raw": [0.5, 0.5], "area": [0, 0, 1, 1], "ds": [1, 0], "dt": [0, 1],
+# Shared with the HTTP thread (pad.html). The area is in raw-normalized sensor coords.
+STATE = {"area": [0, 0, 1, 1], "ds": [1, 0], "dt": [0, 1],
          "screens": [], "active": None, "can_switch": False}
 LOCK = threading.Lock()
 
@@ -276,7 +276,7 @@ def main():
     margin = MARGIN_MM * res
     last = time.monotonic()
 
-    def frame(down_now):
+    def frame():
         nonlocal out_tool
         s, t = pos((rx - x0) / rxw, (ry - y0) / ryh)
         sx, ty_ = s * W, t * H
@@ -300,12 +300,8 @@ def main():
             ui.write(e.EV_ABS, e.ABS_TILT_X, ox); ui.write(e.EV_ABS, e.ABS_TILT_Y, oy)
             for k, v in keys.items(): ui.write(e.EV_KEY, k, v)
             ui.syn()
-        if down_now:  # pen-down position, for pad.html calibration
-            with LOCK:
-                STATE["raw"] = [(rx - x0) / rxw, (ry - y0) / ryh]; STATE["seq"] += 1
 
     buf = b""
-    down = False
     try:
         while True:
             r, _, _ = select.select([fd], [], [], 0.15)
@@ -313,7 +309,7 @@ def main():
                 if synth and tool and time.monotonic() - last > 0.15:  # left proximity
                     tool, synth = None, False
                     keys[e.BTN_TOUCH] = 0; pres = 0
-                    frame(False)
+                    frame()
                 continue
             chunk = os.read(fd, 4096)
             if not chunk:
@@ -328,8 +324,6 @@ def main():
                     if v: tool, synth = c, False
                     elif tool == c: tool, synth = None, False
                 elif t == e.EV_KEY and c in keys:
-                    if c == e.BTN_TOUCH and v and not keys[c]:
-                        down = True
                     keys[c] = v
                 elif t == e.EV_ABS:
                     if tool is None and c in (e.ABS_X, e.ABS_Y, e.ABS_PRESSURE):
@@ -341,8 +335,7 @@ def main():
                     elif c == e.ABS_PRESSURE: pres = v
                     elif c == e.ABS_DISTANCE: dist = v
                 elif t == e.EV_SYN and c == e.SYN_REPORT:
-                    frame(down)
-                    down = False
+                    frame()
             buf = buf[n:]
     except KeyboardInterrupt:
         pass
