@@ -99,7 +99,8 @@
     const mh = barH * 0.75, k = Math.min(mh / bh, (barW * 0.55) / bw);
     const scr = S.screens.map(s =>
       `<div class="scr ${s.name === S.active ? "on" : ""}" data-screen="${s.name}" style="left:${(s.x - x0) * k}px;` +
-      `top:${(s.y - y0) * k}px;width:${s.lw * k}px;height:${s.lh * k}px"><b>${s.name}</b>${s.w}×${s.h}</div>`).join("");
+      `top:${(s.y - y0) * k}px;width:${s.lw * k}px;height:${s.lh * k}px"><b>${s.name}</b>${s.w}×${s.h}` +
+      `${s.name === S.active ? "<span>(active)</span>" : ""}</div>`).join("");
     const ps = barH * 0.6, d = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
     const pat = unlocked ? "" : `<div class="pat" style="width:${ps}px;height:${ps}px">` +
       d.map(([u, v], i) => `<div class="dot" data-dot="${i}" style="left:${u * ps}px;top:${v * ps}px"></div>`).join("") + `</div>`;
