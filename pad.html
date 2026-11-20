@@ -6,44 +6,57 @@
 <style>
   html, body { margin: 0; height: 100%; background: #fff; color: #000; overflow: hidden;
     touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
-    overscroll-behavior: none; font: 22px/1.4 sans-serif; }
+    overscroll-behavior: none; font: 22px/1.3 sans-serif; }
   /* Palm zone = everything outside #area, shaded via a huge box-shadow. */
   #area { position: fixed; display: none; border: 3px solid #000; box-sizing: border-box;
     box-shadow: 0 0 0 9999px #d8d8d8; }
-  #msg { position: fixed; bottom: 24px; left: 0; right: 0; text-align: center; color: #666; }
+  #msg { position: fixed; top: 40%; left: 0; right: 0; text-align: center; color: #555; padding: 0 24px; }
+  /* Screen selector: lives in the palm strip, rotated to read upright for the user. */
+  #bar { position: fixed; display: flex; align-items: center; justify-content: center; gap: 14px;
+    transform-origin: center; }
+  #bar button { font: inherit; background: #fff; color: #000; border: 2px solid #000; border-radius: 10px;
+    padding: 10px 18px; min-width: 120px; }
+  #bar button.on { background: #000; color: #fff; }
+  #bar .hint { color: #444; }
 </style></head>
 <body>
 <div id="area"></div>
 <div id="msg">Pen → laptop. Tap a few dots near different corners to outline the drawing area.</div>
+<div id="bar"></div>
 <script>
-  // Swallow everything so Android does nothing with the pen while it drives the laptop.
+  // ---- Swallow everything so Android does nothing with the pen while it drives the laptop. ----
+  // Listeners below all sit on window (capture) too, and use ev.target, since propagation stops here.
   const stop = e => { e.preventDefault(); e.stopPropagation(); };
-  for (const t of ["pointerdown","pointermove","pointerup","touchstart","touchmove","touchend",
+  for (const t of ["pointerdown","pointermove","pointerup","pointercancel","touchstart","touchmove","touchend",
                    "mousedown","mousemove","mouseup","click","dblclick","contextmenu",
                    "wheel","gesturestart","selectstart","dragstart","keydown"])
     window.addEventListener(t, stop, { passive: false, capture: true });
-  // First tap goes fullscreen (the bridge injects one at start).
-  window.addEventListener("pointerup", () => {
+  window.addEventListener("pointerup", () => {   // first tap goes fullscreen (the bridge injects one)
     if (!document.fullscreenElement)
       document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
   }, { capture: true });
 
-  // Calibration: pair each pen-down's screen position with the raw sensor position the bridge saw,
-  // then fit screen = a*raw + b per axis (with axis swap) and draw the active area.
-  const msg = document.getElementById("msg"), box = document.getElementById("area");
-  let pairs = [], lastSeq = -1, area = null, fit = null;
-  try { fit = JSON.parse(localStorage.getItem("boox-pen-fit")); } catch (_) {}
+  const $ = id => document.getElementById(id);
+  const msg = $("msg"), box = $("area"), bar = $("bar");
+  let S = null, pairs = [], lastSeq = -1, fit = null;
+  // Calibration depends on how Android is rotating the page, so keep one per orientation.
+  const fitKey = () => "boox-pen-fit-" + ((screen.orientation && screen.orientation.type) || (innerWidth > innerHeight ? "landscape" : "portrait"));
+  const loadFit = () => { fit = null; pairs = [];
+    try { fit = JSON.parse(localStorage.getItem(fitKey())); } catch (_) {}
+    if (!fit) { box.style.display = "none"; msg.textContent = "Pen → laptop. Tap a few dots near different corners to outline the drawing area."; } };
+  loadFit();
 
-  const state = () => fetch("/state.json", { cache: "no-store" }).then(r => r.json());
-  state().then(s => { lastSeq = s.seq; area = s.area; draw(); }).catch(() => {});
+  const getState = () => fetch("/state.json", { cache: "no-store" }).then(r => r.json());
+  getState().then(s => { S = s; lastSeq = s.seq; draw(); }).catch(() => {});
 
-  function linfit(xs, ys) {           // least squares y = a x + b; returns [a, b, rms]
+  // ---- Calibration: pair pen-down screen positions with the raw sensor positions the bridge saw,
+  //      fit screen = a*raw + b per axis (with axis swap). ----
+  function linfit(xs, ys) {
     const n = xs.length, mx = xs.reduce((a, b) => a + b) / n, my = ys.reduce((a, b) => a + b) / n;
     let sxx = 0, sxy = 0; xs.forEach((x, i) => { sxx += (x - mx) ** 2; sxy += (x - mx) * (ys[i] - my); });
-    if (sxx < 0.01) return null;      // not enough spread yet
+    if (sxx < 0.01) return null;
     const a = sxy / sxx, b = my - a * mx;
-    const rms = Math.sqrt(xs.reduce((s, x, i) => s + (a * x + b - ys[i]) ** 2, 0) / n);
-    return [a, b, rms];
+    return [a, b, Math.sqrt(xs.reduce((s, x, i) => s + (a * x + b - ys[i]) ** 2, 0) / n)];
   }
   function refit() {
     if (pairs.length < 3) return;
@@ -53,28 +66,100 @@
       .sort((a, b) => a.err - b.err);
     if (opts.length && opts[0].err < 0.03) {
       fit = opts[0];
-      try { localStorage.setItem("boox-pen-fit", JSON.stringify(fit)); } catch (_) {}
+      try { localStorage.setItem(fitKey(), JSON.stringify(fit)); } catch (_) {}
       draw();
     }
   }
+  // raw-normalized point -> screen px
+  const toScreen = (p, q) => { const r = { p, q };
+    return [(fit.u[0] * r[fit.ua] + fit.u[1]) * innerWidth, (fit.v[0] * r[fit.va] + fit.v[1]) * innerHeight]; };
+
   function draw() {
-    if (!fit || !area) return;
-    const [p0, q0, p1, q1] = area, raw = { p: [p0, p1], q: [q0, q1] };
-    const us = raw[fit.ua].map(r => fit.u[0] * r + fit.u[1]), vs = raw[fit.va].map(r => fit.v[0] * r + fit.v[1]);
+    if (!S) return;
     const W = innerWidth, H = innerHeight;
-    Object.assign(box.style, { display: "block",
-      left: Math.min(...us) * W + "px", width: Math.abs(us[1] - us[0]) * W + "px",
-      top: Math.min(...vs) * H + "px", height: Math.abs(vs[1] - vs[0]) * H + "px" });
-    msg.textContent = "";
+    let strip = { x: 0, y: H - 110, w: W, h: 110 }, angle = 0;
+    if (fit) {
+      const [p0, q0, p1, q1] = S.area, a = toScreen(p0, q0), b = toScreen(p1, q1);
+      const L = Math.min(a[0], b[0]), T = Math.min(a[1], b[1]), R = Math.max(a[0], b[0]), B = Math.max(a[1], b[1]);
+      Object.assign(box.style, { display: "block", left: L + "px", top: T + "px", width: R - L + "px", height: B - T + "px" });
+      msg.textContent = "";
+      // Palm strip = the biggest gap around the area.
+      const gaps = [{ x: 0, y: 0, w: L, h: H }, { x: R, y: 0, w: W - R, h: H },
+                    { x: 0, y: 0, w: W, h: T }, { x: 0, y: B, w: W, h: H - B }];
+      strip = gaps.sort((g1, g2) => g2.w * g2.h - g1.w * g1.h)[0];
+      // The user's "right" on screen = image of the output +s direction; snap to 90°.
+      const o = toScreen(0.5, 0.5), r = toScreen(0.5 + S.ds[0] * 0.1, 0.5 + S.ds[1] * 0.1);
+      angle = Math.round(Math.atan2(r[1] - o[1], r[0] - o[0]) / (Math.PI / 2)) * 90;
+    }
+    const side = angle % 180 !== 0;
+    Object.assign(bar.style, { left: strip.x + strip.w / 2 + "px", top: strip.y + strip.h / 2 + "px",
+      width: (side ? strip.h : strip.w) + "px", height: (side ? strip.w : strip.h) + "px",
+      transform: `translate(-50%, -50%) rotate(${angle}deg)` });
+    renderBar();
   }
+
+  // ---- Screen selector with hold-to-unlock (palm-proof). ----
+  let unlocked = false, relockTimer = 0, holdTimer = 0, hold = null, pending = null;
+  const active = new Map();   // pointerId -> {x, y, t}
+  function renderBar(note) {
+    if (!S || !S.can_switch) { bar.innerHTML = ""; return; }
+    if (!unlocked) {
+      bar.innerHTML = `<button data-hold>Screen: ${S.active || "?"}</button>` +
+        `<span class="hint">${note || "hold 1 s to change"}</span>`;
+    } else {
+      bar.innerHTML = S.screens.map(s =>
+        `<button data-screen="${s.name}" class="${s.name === S.active ? "on" : ""}">${s.name}<br><small>${s.w}×${s.h}</small></button>`
+      ).join("") + `<span class="hint">tap one</span>`;
+    }
+  }
+  function relock() { unlocked = false; clearTimeout(relockTimer); renderBar(); }
+  function cancelHold() { clearTimeout(holdTimer); if (hold) { hold = null; renderBar(); } }
+
+  window.addEventListener("pointerdown", ev => {
+    active.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, t: performance.now() });
+    if (active.size > 1) { cancelHold(); pending = null; return; }       // two contacts = palm/hand
+    const big = (ev.width || 0) > 60 || (ev.height || 0) > 60;            // fat contact = palm
+    const el = ev.target.closest && ev.target.closest("[data-hold],[data-screen]");
+    if (!el || big) return;
+    if (el.dataset.hold !== undefined && !unlocked) {
+      hold = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
+      renderBar("keep holding…");
+      holdTimer = setTimeout(() => {
+        hold = null; unlocked = true;
+        getState().then(s => { S = s; renderBar(); }).catch(renderBar);
+        relockTimer = setTimeout(relock, 5000);
+      }, 1000);
+    } else if (el.dataset.screen && unlocked) {
+      pending = { id: ev.pointerId, name: el.dataset.screen, x: ev.clientX, y: ev.clientY, t: performance.now() };
+    }
+  }, { capture: true });
+  window.addEventListener("pointermove", ev => {
+    const far = o => o && o.id === ev.pointerId && Math.hypot(ev.clientX - o.x, ev.clientY - o.y) > 20;
+    if (far(hold)) cancelHold();
+    if (far(pending)) pending = null;
+  }, { capture: true });
+  const up = ev => {
+    active.delete(ev.pointerId);
+    if (hold && hold.id === ev.pointerId) cancelHold();
+    if (pending && pending.id === ev.pointerId && performance.now() - pending.t < 600) {
+      const name = pending.name; pending = null;
+      fetch("/screen", { method: "POST", body: name }).then(r => r.json())
+        .then(s => { S = s; relock(); draw(); }).catch(relock);
+    }
+    pending = null;
+  };
+  window.addEventListener("pointerup", up, { capture: true });
+  window.addEventListener("pointercancel", up, { capture: true });
+
+  // ---- Collect calibration pairs from pen taps. ----
   window.addEventListener("pointerdown", ev => {
     if (ev.pointerType !== "pen") return;
     const u = ev.clientX / innerWidth, v = ev.clientY / innerHeight;
-    setTimeout(() => state().then(s => {
-      area = s.area;
+    setTimeout(() => getState().then(s => {
+      S = s;
       if (s.seq !== lastSeq) { lastSeq = s.seq; pairs.push({ u, v, p: s.raw[0], q: s.raw[1] }); pairs = pairs.slice(-12); refit(); }
     }).catch(() => {}), 150);
   }, { capture: true });
-  addEventListener("resize", draw);
+  addEventListener("resize", () => { loadFit(); draw(); });
 </script>
 </body></html>

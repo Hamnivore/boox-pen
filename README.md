@@ -21,26 +21,31 @@ raw `input_event` structs over USB, and Python/evdev re-emits them through `/dev
 
 - **Aspect-correct area.** The active area is cropped to your monitor's aspect ratio, so circles stay
   round. It's anchored top-left, which leaves the spare strip at the bottom/right as a palm rest.
+- **Palm zone.** Outside the active area (past a 3 mm margin) the pen is ignored on the laptop.
 - **Pen pad page.** On start, the bridge opens a fullscreen blank page in Chrome on the tablet, served
   over `adb reverse`. The page swallows all pen and touch input so Android doesn't react to your strokes.
-  After a few pen taps it calibrates itself, outlines the active area and greys out the palm zone.
+  After a few pen taps it calibrates itself (once per screen orientation), outlines the active area and
+  greys out the palm zone.
+- **Screen selector (Hyprland).** A selector in the palm strip picks which monitor the pen drives.
+  Hold it for 1 s to unlock, then tap a screen. Two contacts or a palm-sized contact cancel the hold, and
+  it relocks after 5 s. The choice is remembered in `~/.config/boox-pen/screen`, and the area refits to
+  that monitor's aspect.
+- **Starts on plug-in.** `install.sh` adds a udev rule for your tablet's serial that starts a systemd
+  user service. The service exits when you unplug the tablet. Only one bridge runs at a time.
 - **Rotation.** `--rotate` turns both position and tilt.
 - **Keeps the tablet awake.** Runs `svc power stayon usb`, because the digitizer sleeps when the
   screen does.
 
 ## Setup
 
+On the tablet: enable Developer options → USB debugging. Plug it in and accept the prompt. Then:
+
 ```sh
 sudo apt install adb python3-evdev
-# allow your user to create virtual input devices
-sudo groupadd -f uinput && sudo usermod -aG uinput $USER
-echo 'KERNEL=="uinput", MODE="0660", GROUP="uinput", OPTIONS+="static_node=uinput"' \
-  | sudo tee /etc/udev/rules.d/60-uinput.rules
-sudo udevadm control --reload && sudo udevadm trigger
-ln -s "$PWD/run.sh" ~/.local/bin/boox-pen
+./install.sh   # uinput access, `boox-pen` on PATH, autostart for this tablet (uses sudo)
 ```
 
-On the tablet: enable Developer options → USB debugging. Plug it in and accept the prompt.
+Logs: `journalctl --user -u boox-pen -f`.
 
 ## Usage
 
@@ -48,18 +53,17 @@ On the tablet: enable Developer options → USB debugging. Plug it in and accept
 boox-pen [--rotate 0|90|180|270] [--aspect 16:9|1920x1080|off] [--no-pad]
 ```
 
-Ctrl-C stops it. `run.sh` uses `sg uinput` so it works before you log out and back in for the
+Normally it starts by itself when you plug the tablet in. Run it by hand for other options; Ctrl-C stops it. `run.sh` uses `sg uinput` so it works before you log out and back in for the
 new group.
 
-With multiple monitors, pass `--aspect` and map the tablet to one output in your compositor, for
-example in Hyprland: `input { tablet { output = eDP-1 } }`.
+On Hyprland, screens are handled for you. On other compositors, pass `--aspect` and map the device
+`Boox Pen (adb)` to one output in your compositor's config.
 
 ## Limits
 
 - BOOX system gestures (edge swipes, the floating button) are handled above any app and still fire.
 - Assumes an arm64 tablet (24-byte `input_event`) and roughly 100 sensor units/mm for the reported
   resolution.
-- Chrome may open a new tab each start.
 
 ## License
 
